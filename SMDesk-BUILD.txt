@@ -1,0 +1,14 @@
+SMDesk Remote Support
+
+SMDesk Version: 1.2.0
+Upstream: RustDesk 1.4.9
+Company: SMNET Co., Ltd
+
+ID Server:
+smdesk.smnet.vn
+
+Product:
+SMDesk Remote Support
+
+Build Target:
+Windows x86_64
