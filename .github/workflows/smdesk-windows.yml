@@ -27,7 +27,7 @@ env:
   FLUTTER_VERSION: "3.24.5"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-  SM_DESK_VERSION: "1.2.0"
+  SM_DESK_VERSION: "1.2.1"
 
 jobs:
 
@@ -258,7 +258,7 @@ jobs:
 
           mv \
             ./target/release/rustdesk-portable-packer.exe \
-            ./SMDesk-Release/SMDesk-1.2.0-Windows-x64.exe
+            ./SMDesk-Release/SMDesk-1.2.1-Windows-x64.exe
 
           ls -lh ./SMDesk-Release/
 
@@ -266,10 +266,10 @@ jobs:
         shell: pwsh
         run: |
           $hash = Get-FileHash `
-            ".\SMDesk-Release\SMDesk-1.2.0-Windows-x64.exe" `
+            ".\SMDesk-Release\SMDesk-1.2.1-Windows-x64.exe" `
             -Algorithm SHA256
 
-          "$($hash.Hash)  SMDesk-1.2.0-Windows-x64.exe" |
+          "$($hash.Hash)  SMDesk-1.2.1-Windows-x64.exe" |
             Out-File `
             ".\SMDesk-Release\SHA256SUM.txt" `
             -Encoding ascii
@@ -279,7 +279,7 @@ jobs:
       - name: Upload SMDesk Portable EXE
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: SMDesk-1.2.0-Windows-x64-Portable
+          name: SMDesk-1.2.1-Windows-x64-Portable
           path: ./SMDesk-Release
           if-no-files-found: error
           retention-days: 30

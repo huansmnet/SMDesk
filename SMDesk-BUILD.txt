@@ -1,6 +1,6 @@
 SMDesk Remote Support
 
-SMDesk Version: 1.2.0
+SMDesk Version: 1.2.1
 Upstream: RustDesk 1.4.9
 Company: SMNET Co., Ltd
 
