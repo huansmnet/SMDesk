@@ -285,6 +285,21 @@ jobs:
           print("macOS ARM deployment target = 12.3")
           PY
 
+      - name: Prepare upstream macOS bundle name
+        shell: bash
+        run: |
+          set -e
+
+          CONFIG="flutter/macos/Runner/Configs/AppInfo.xcconfig"
+
+          echo "===== macOS build bundle identity ====="
+
+          sed -i ''             's/^PRODUCT_NAME = .*/PRODUCT_NAME = RustDesk/'             "$CONFIG"
+
+          grep "PRODUCT_NAME" "$CONFIG"
+
+          grep -q '^PRODUCT_NAME = RustDesk$' "$CONFIG"
+
       - name: Build SMDesk
         shell: bash
         run: |
@@ -302,28 +317,52 @@ jobs:
             flutter/build/macos/Build/Products/Release/
 
           test -d \
-            flutter/build/macos/Build/Products/Release/SMDesk.app
+            flutter/build/macos/Build/Products/Release/RustDesk.app
 
-      - name: Verify SMDesk.app
+      - name: Finalize SMDesk application
         shell: bash
         run: |
-          APP="flutter/build/macos/Build/Products/Release/SMDesk.app"
+          set -e
 
-          echo "===== Bundle ====="
+          RELEASE="flutter/build/macos/Build/Products/Release"
+          SRC="$RELEASE/RustDesk.app"
+          APP="$RELEASE/SMDesk.app"
 
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleName" \
-            "$APP/Contents/Info.plist"
+          echo "===== Finalize SMDesk.app ====="
 
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleIdentifier" \
-            "$APP/Contents/Info.plist"
+          test -d "$SRC"
 
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleShortVersionString" \
-            "$APP/Contents/Info.plist"
+          rm -rf "$APP"
+          mv "$SRC" "$APP"
 
-          file "$APP/Contents/MacOS/SMDesk" || true
+          PLIST="$APP/Contents/Info.plist"
+
+          /usr/libexec/PlistBuddy             -c "Set :CFBundleName SMDesk"             "$PLIST"
+
+          /usr/libexec/PlistBuddy             -c "Set :CFBundleDisplayName SMDesk"             "$PLIST" || true
+
+          /usr/libexec/PlistBuddy             -c "Set :CFBundleIdentifier vn.smnet.smdesk"             "$PLIST"
+
+          /usr/libexec/PlistBuddy             -c "Set :CFBundleShortVersionString 1.2.1"             "$PLIST"
+
+          /usr/libexec/PlistBuddy             -c "Set :CFBundleVersion 121"             "$PLIST"
+
+          echo
+          echo "===== Final SMDesk identity ====="
+
+          echo "Name:"
+          /usr/libexec/PlistBuddy             -c "Print :CFBundleName"             "$PLIST"
+
+          echo "Bundle ID:"
+          /usr/libexec/PlistBuddy             -c "Print :CFBundleIdentifier"             "$PLIST"
+
+          echo "Version:"
+          /usr/libexec/PlistBuddy             -c "Print :CFBundleShortVersionString"             "$PLIST"
+
+          echo "Executable:"
+          /usr/libexec/PlistBuddy             -c "Print :CFBundleExecutable"             "$PLIST"
+
+          ls -lah "$APP"
 
       - name: Create SMDesk DMG
         shell: bash
