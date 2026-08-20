@@ -1,0 +1,368 @@
+name: SMDesk macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - smdesk-1.2
+    paths:
+      - "flutter/**"
+      - "src/**"
+      - "libs/**"
+      - "branding/**"
+      - "scripts/**"
+      - "build.py"
+      - "Cargo.toml"
+      - ".github/workflows/smdesk-macos.yml"
+
+permissions:
+  contents: read
+
+env:
+  SMDesk_VERSION: "1.2.1"
+  FLUTTER_VERSION: "3.24.5"
+  MAC_RUST_VERSION: "1.81"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-macos:
+    name: SMDesk macOS ${{ matrix.arch }}
+    needs:
+      - generate-bridge
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+
+          - arch: arm64
+            target: aarch64-apple-darwin
+            os: macos-14
+            extra_args: "--screencapturekit"
+
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            os: macos-15-intel
+            extra_args: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+
+      - name: Export GitHub Actions cache environment
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
+        with:
+          script: |
+            core.exportVariable(
+              'ACTIONS_CACHE_URL',
+              process.env.ACTIONS_CACHE_URL || ''
+            );
+            core.exportVariable(
+              'ACTIONS_RUNTIME_TOKEN',
+              process.env.ACTIONS_RUNTIME_TOKEN || ''
+            );
+
+      - name: Checkout SMDesk
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+
+      - name: Apply SMDesk server configuration
+        shell: bash
+        run: |
+          if [ -f scripts/apply-smdesk-branding.py ]; then
+            python3 scripts/apply-smdesk-branding.py
+          fi
+
+      - name: Verify SMDesk macOS identity
+        shell: bash
+        run: |
+          echo "===== AppInfo ====="
+          cat flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          grep -q "PRODUCT_NAME = SMDesk" \
+            flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+          grep -q "PRODUCT_BUNDLE_IDENTIFIER = vn.smnet.smdesk" \
+            flutter/macos/Runner/Configs/AppInfo.xcconfig
+
+      # ---------------------------------------------------
+      # Build proper macOS .icns from official SMDesk icon
+      # ---------------------------------------------------
+
+      - name: Build SMDesk macOS icon
+        shell: bash
+        run: |
+          set -e
+
+          SRC="branding/smdesk-icon.png"
+          ICONSET="/tmp/SMDesk.iconset"
+
+          test -f "$SRC"
+
+          rm -rf "$ICONSET"
+          mkdir -p "$ICONSET"
+
+          sips -z 16 16     "$SRC" --out "$ICONSET/icon_16x16.png"
+          sips -z 32 32     "$SRC" --out "$ICONSET/icon_16x16@2x.png"
+
+          sips -z 32 32     "$SRC" --out "$ICONSET/icon_32x32.png"
+          sips -z 64 64     "$SRC" --out "$ICONSET/icon_32x32@2x.png"
+
+          sips -z 128 128   "$SRC" --out "$ICONSET/icon_128x128.png"
+          sips -z 256 256   "$SRC" --out "$ICONSET/icon_128x128@2x.png"
+
+          sips -z 256 256   "$SRC" --out "$ICONSET/icon_256x256.png"
+          sips -z 512 512   "$SRC" --out "$ICONSET/icon_256x256@2x.png"
+
+          sips -z 512 512   "$SRC" --out "$ICONSET/icon_512x512.png"
+          sips -z 1024 1024 "$SRC" --out "$ICONSET/icon_512x512@2x.png"
+
+          iconutil \
+            -c icns \
+            "$ICONSET" \
+            -o flutter/macos/Runner/AppIcon.icns
+
+          ls -lh flutter/macos/Runner/AppIcon.icns
+
+      - name: Install macOS build runtime
+        shell: bash
+        run: |
+          brew install llvm create-dmg
+
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            brew install pkg-config
+          fi
+
+      # NASM 3.x is incompatible with some dependencies.
+      # Follow upstream RustDesk 1.4.9 and use NASM 2.16.
+      - name: Install NASM 2.16
+        shell: bash
+        run: |
+          wget -q \
+            https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+
+          unzip -q nasm-2.16.03-macosx.zip
+
+          sudo cp \
+            nasm-2.16.03/nasm \
+            /usr/local/bin/nasm
+
+          nasm --version
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter 3.24.5
+        shell: bash
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+
+          git apply \
+            "${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+      - name: Flutter scheduler workaround
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+
+          sed -i -e \
+            's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' \
+            ../packages/flutter/lib/src/scheduler/binding.dart
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: ${{ matrix.target }}
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          prefix-key: smdesk-${{ matrix.os }}
+
+      - name: Restore Flutter/Rust bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          if ! "$VCPKG_ROOT/vcpkg" \
+             install \
+             --x-install-root="$VCPKG_ROOT/installed"
+          then
+
+            find "$VCPKG_ROOT" -name "*.log" | while read log
+            do
+              echo "===== $log ====="
+              cat "$log"
+            done
+
+            exit 1
+          fi
+
+      - name: Toolchain information
+        shell: bash
+        run: |
+          uname -a
+          uname -m
+          sw_vers
+          clang --version
+          rustc --version
+          cargo --version
+          flutter --version
+
+      # ---------------------------------------------------
+      # ARM requires macOS 12.3 for ScreenCaptureKit.
+      # Mirrors upstream RustDesk 1.4.9.
+      # ---------------------------------------------------
+
+      - name: Set ARM minimum macOS version
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          files = {
+              "build.py": [
+                  (
+                      r"MACOSX_DEPLOYMENT_TARGET=10\.14",
+                      "MACOSX_DEPLOYMENT_TARGET=12.3"
+                  )
+              ],
+
+              "flutter/macos/Podfile": [
+                  (
+                      r"platform :osx, '[^']+'",
+                      "platform :osx, '12.3'"
+                  )
+              ],
+
+              "Cargo.toml": [
+                  (
+                      r'osx_minimum_system_version = "[^"]+"',
+                      'osx_minimum_system_version = "12.3"'
+                  )
+              ],
+
+              "flutter/macos/Runner.xcodeproj/project.pbxproj": [
+                  (
+                      r"MACOSX_DEPLOYMENT_TARGET = [0-9.]+;",
+                      "MACOSX_DEPLOYMENT_TARGET = 12.3;"
+                  )
+              ],
+          }
+
+          for fn, reps in files.items():
+              p = Path(fn)
+              s = p.read_text()
+
+              for a, b in reps:
+                  s = re.sub(a, b, s)
+
+              p.write_text(s)
+
+          print("macOS ARM deployment target = 12.3")
+          PY
+
+      - name: Build SMDesk
+        shell: bash
+        run: |
+          set -e
+
+          ./build.py \
+            --flutter \
+            --hwcodec \
+            --unix-file-copy-paste \
+            ${{ matrix.extra_args }}
+
+          echo "===== Build products ====="
+
+          ls -lah \
+            flutter/build/macos/Build/Products/Release/
+
+          test -d \
+            flutter/build/macos/Build/Products/Release/SMDesk.app
+
+      - name: Verify SMDesk.app
+        shell: bash
+        run: |
+          APP="flutter/build/macos/Build/Products/Release/SMDesk.app"
+
+          echo "===== Bundle ====="
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleName" \
+            "$APP/Contents/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$APP/Contents/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleShortVersionString" \
+            "$APP/Contents/Info.plist"
+
+          file "$APP/Contents/MacOS/SMDesk" || true
+
+      - name: Create SMDesk DMG
+        shell: bash
+        run: |
+          set -e
+
+          APP="flutter/build/macos/Build/Products/Release/SMDesk.app"
+
+          DMG="SMDesk-${SMDesk_VERSION}-macOS-${{ matrix.arch }}.dmg"
+
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+
+          sed -i -e \
+            's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' \
+            "$CREATE_DMG"
+
+          create-dmg \
+            --volname "SMDesk ${SMDesk_VERSION}" \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "SMDesk.app" 200 190 \
+            --hide-extension "SMDesk.app" \
+            --app-drop-link 600 185 \
+            "$DMG" \
+            "$APP"
+
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+
+          echo "===== Release ====="
+          ls -lh "$DMG" "$DMG.sha256"
+          cat "$DMG.sha256"
+
+      - name: Upload SMDesk macOS artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SMDesk-1.2.1-macOS-${{ matrix.arch }}
+          path: |
+            SMDesk-1.2.1-macOS-${{ matrix.arch }}.dmg
+            SMDesk-1.2.1-macOS-${{ matrix.arch }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 30
