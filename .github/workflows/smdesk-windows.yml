@@ -227,6 +227,63 @@ jobs:
           name: topmostwindow-artifacts-x64
           path: ./SMDesk-Windows-x64
 
+      - name: Build SMDesk single-file portable EXE
+        shell: bash
+        run: |
+          echo "===== PREPARE PORTABLE PACKER ====="
+
+          sed -i '/dpiAware/d' res/manifest.xml
+
+          runner_res=$(find . -name "Runner.res" | head -1)
+
+          if [ -n "$runner_res" ]; then
+            echo "Runner.res: $runner_res"
+            cp "$runner_res" ./libs/portable/Runner.res
+          else
+            echo "WARNING: Runner.res not found"
+          fi
+
+          pushd ./libs/portable
+
+          pip3 install -r requirements.txt
+
+          python3 ./generate.py \
+            -f ../../SMDesk-Windows-x64/ \
+            -o . \
+            -e ../../SMDesk-Windows-x64/SMDesk.exe
+
+          popd
+
+          mkdir -p ./SMDesk-Release
+
+          mv \
+            ./target/release/rustdesk-portable-packer.exe \
+            ./SMDesk-Release/SMDesk-1.2.0-Windows-x64.exe
+
+          ls -lh ./SMDesk-Release/
+
+      - name: Generate Portable SHA256
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash `
+            ".\SMDesk-Release\SMDesk-1.2.0-Windows-x64.exe" `
+            -Algorithm SHA256
+
+          "$($hash.Hash)  SMDesk-1.2.0-Windows-x64.exe" |
+            Out-File `
+            ".\SMDesk-Release\SHA256SUM.txt" `
+            -Encoding ascii
+
+          Get-Content ".\SMDesk-Release\SHA256SUM.txt"
+
+      - name: Upload SMDesk Portable EXE
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SMDesk-1.2.0-Windows-x64-Portable
+          path: ./SMDesk-Release
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Generate SHA256
         shell: pwsh
         run: |
