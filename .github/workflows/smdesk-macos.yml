@@ -1,16 +1,22 @@
-      - name: Build RustDesk upstream core
-        shell: bash
-        run: |
-          set -e
+name: SMDesk macOS
 
-          ./build.py \
-            --flutter \
-            --hwcodec \
-            --unix-file-copy-paste \
-            ${{ matrix.extra_args }}
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - smdesk-1.2
 
-          echo "===== Build products ====="
-          ls -lah flutter/build/macos/Build/Products/Release/
+permissions:
+  contents: read
 
-          test -d \
-            flutter/build/macos/Build/Products/Release/RustDesk.app
+env:
+  SMDESK_VERSION: "1.2.1"
+  FLUTTER_VERSION: "3.24.5"
+  MAC_RUST_VERSION: "1.81"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-macos:
+    name: SMDesk macOS ${{ matrix.arch }}
