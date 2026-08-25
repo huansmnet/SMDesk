@@ -2,6 +2,7 @@ name: SMDesk Linux
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - smdesk-1.2
@@ -10,7 +11,8 @@ on:
       - "src/**"
       - "libs/**"
       - "branding/**"
-      - "scripts/**"
+      - "scripts/apply-smdesk-branding.py"
+      - "scripts/rebrand-smdesk-linux-deb.sh"
       - "Cargo.toml"
       - "Cargo.lock"
       - "build.py"
@@ -32,7 +34,9 @@ jobs:
     uses: ./.github/workflows/bridge.yml
 
   linux-x86_64:
+
     name: SMDesk Linux x86_64
+
     needs:
       - generate-bridge
 
@@ -40,14 +44,84 @@ jobs:
 
     steps:
 
+      # ----------------------------------------------------
+      # GitHub cache environment
+      # ----------------------------------------------------
+
+      - name: Export GitHub Actions cache environment
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
+        with:
+          script: |
+            core.exportVariable(
+              'ACTIONS_CACHE_URL',
+              process.env.ACTIONS_CACHE_URL || ''
+            );
+            core.exportVariable(
+              'ACTIONS_RUNTIME_TOKEN',
+              process.env.ACTIONS_RUNTIME_TOKEN || ''
+            );
+
+      # ----------------------------------------------------
+      # Host preparation
+      # Do NOT install the full Linux GUI stack on the host.
+      # The actual build is performed inside Ubuntu 18.04.
+      # ----------------------------------------------------
+
+      - name: Prepare build host
+        shell: bash
+        run: |
+          set -eux
+
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+
+          sudo apt-get update -y
+
+          sudo apt-get install -y \
+            nasm \
+            qemu-user-static \
+            libva-dev
+
+          df -h
+          free -m
+
+      # ----------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------
+
       - name: Checkout SMDesk
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           submodules: recursive
+          fetch-depth: 0
 
-      - name: Verify branding
+      # ----------------------------------------------------
+      # Apply SMDesk server configuration
+      # ----------------------------------------------------
+
+      - name: Apply SMDesk self-host configuration
         shell: bash
         run: |
+          set -e
+
+          python3 scripts/apply-smdesk-branding.py
+
+          echo "===== SMDesk CONFIG ====="
+
+          grep -nE \
+            'APP_NAME|PROD_RENDEZVOUS_SERVER|RENDEZVOUS_SERVERS|RS_PUB_KEY' \
+            libs/hbb_common/src/config.rs | head -20
+
+      # ----------------------------------------------------
+      # Branding assets
+      # ----------------------------------------------------
+
+      - name: Verify SMDesk branding
+        shell: bash
+        run: |
+          set -e
+
           test -f branding/smdesk-icon.png
           test -f branding/smnet-logo.png
 
@@ -55,171 +129,338 @@ jobs:
             branding/smdesk-icon.png \
             branding/smnet-logo.png
 
-      - name: Install Linux dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
+      # ----------------------------------------------------
+      # Swap
+      # ----------------------------------------------------
 
-          sudo apt-get install -y \
-            build-essential \
-            clang \
-            cmake \
-            curl \
-            gcc \
-            g++ \
-            git \
-            libayatana-appindicator3-dev \
-            libasound2-dev \
-            libclang-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgtk-3-dev \
-            libpam0g-dev \
-            libpulse-dev \
-            libva-dev \
-            libxcb-randr0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxdo-dev \
-            libxfixes-dev \
-            nasm \
-            ninja-build \
-            pkg-config \
-            python3 \
-            rpm \
-            unzip \
-            wget \
-            xz-utils \
-            libssl-dev
+      - name: Set swap space
+        uses: pierotofy/set-swap-space@49819abfb41bd9b44fb781159c033dba90353a7c
+        with:
+          swap-size-gb: 12
 
-      - name: Install Rust
+      # ----------------------------------------------------
+      # Rust
+      # ----------------------------------------------------
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          target: x86_64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-gnu
           components: rustfmt
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          prefix-key: smdesk-linux-x86_64
-
-      - name: Restore Flutter bridge
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: bridge-artifact
-          path: ./
-
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
-        with:
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
-
-      - name: Install vcpkg dependencies
+      - name: Save Rust version
         shell: bash
         run: |
-          if ! "$VCPKG_ROOT/vcpkg" \
-            install \
-            --triplet x64-linux \
-            --x-install-root="$VCPKG_ROOT/installed"
-          then
-            find "$VCPKG_ROOT" -name "*.log" | while read log
-            do
-              echo "===== $log ====="
-              cat "$log"
-            done
+          RUST_TOOLCHAIN_VERSION="$(cargo --version | awk '{print $2}')"
 
-            exit 1
-          fi
+          echo \
+            "RUST_TOOLCHAIN_VERSION=${RUST_TOOLCHAIN_VERSION}" \
+            >> "$GITHUB_ENV"
 
-      - name: Install Flutter
-        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
-        with:
-          channel: stable
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          rustc --version
+          cargo --version
 
-      - name: Patch Flutter 3.24.5
-        shell: bash
-        run: |
-          FLUTTER_ROOT="$(dirname "$(dirname "$(which flutter)")")"
+      # ----------------------------------------------------
+      # Flutter bridge
+      # ----------------------------------------------------
 
-          cd "$FLUTTER_ROOT"
-
-          git apply \
-            "${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
-
-      - name: Apply SMDesk configuration
-        shell: bash
-        run: |
-          if [ -f scripts/apply-smdesk-branding.py ]; then
-            python3 scripts/apply-smdesk-branding.py
-          fi
-
-          echo "SMDesk branding/configuration applied."
-
-      - name: Disable extra Rust library types
+      - name: Disable Rust bridge rebuild
         shell: bash
         run: |
           sed -i \
             's/\["cdylib", "staticlib", "rlib"\]/["cdylib"]/g' \
             Cargo.toml
 
-      - name: Build SMDesk Linux core
+      - name: Restore Flutter Rust bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bridge-artifact
+          path: ./
+
+      # ----------------------------------------------------
+      # vcpkg
+      # ----------------------------------------------------
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
         shell: bash
         run: |
-          export VCPKG_ROOT="${VCPKG_ROOT}"
+          set -e
 
-          cargo build \
-            --locked \
-            --lib \
-            --features hwcodec,flutter,unix-file-copy-paste \
-            --release
+          if ! "$VCPKG_ROOT/vcpkg" \
+            install \
+            --triplet x64-linux \
+            --x-install-root="$VCPKG_ROOT/installed"
+          then
 
-      - name: Build upstream Linux package
-        shell: bash
-        run: |
-          export DEB_ARCH=amd64
+            echo "===== VCPKG BUILD LOGS ====="
 
-          python3 ./build.py \
-            --flutter \
-            --skip-cargo
+            find "$VCPKG_ROOT" \
+              -name "*.log" \
+              -type f | while read -r logfile
+            do
+              echo
+              echo "===== $logfile ====="
+              cat "$logfile" || true
+            done
 
-          echo "===== Generated DEB ====="
-
-          find . \
-            -maxdepth 2 \
-            -name 'rustdesk*.deb' \
-            -ls
-
-      - name: Finalize SMDesk DEB
-        shell: bash
-        run: |
-          DEB="$(find . -maxdepth 2 -name 'rustdesk*.deb' | head -1)"
-
-          if [ -z "$DEB" ]; then
-            echo "ERROR: upstream DEB not found"
             exit 1
           fi
+
+      # ----------------------------------------------------
+      # Actual Linux build
+      #
+      # IMPORTANT:
+      # Same architecture used by RustDesk upstream:
+      #
+      # GitHub host  : Ubuntu 22.04
+      # Build distro : Ubuntu 18.04
+      # Target       : x86_64
+      #
+      # ----------------------------------------------------
+
+      - name: Build SMDesk Linux
+        uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8
+        with:
+
+          arch: x86_64
+
+          distro: ubuntu18.04
+
+          githubToken: ${{ github.token }}
+
+          dockerRunArgs: |
+            --volume "${PWD}:/workspace"
+            --volume "/opt/artifacts:/opt/artifacts"
+
+          shell: /bin/bash
+
+          install: |
+            set -e
+
+            apt-get update -y
+
+            echo "===== Installing Linux build dependencies ====="
+
+            apt-get install -y \
+              build-essential \
+              clang \
+              cmake \
+              curl \
+              gcc \
+              git \
+              g++ \
+              libayatana-appindicator3-dev \
+              libasound2-dev \
+              libclang-10-dev \
+              libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev \
+              libgtk-3-dev \
+              libpam0g-dev \
+              libpulse-dev \
+              libva-dev \
+              libxcb-randr0-dev \
+              libxcb-shape0-dev \
+              libxcb-xfixes0-dev \
+              libxdo-dev \
+              libxfixes-dev \
+              llvm-10-dev \
+              nasm \
+              ninja-build \
+              pkg-config \
+              tree \
+              python3 \
+              rpm \
+              unzip \
+              wget \
+              xz-utils \
+              libssl-dev
+
+            apt-get remove -y libopus-dev || true
+
+          run: |
+            set -eux
+
+            git config \
+              --global \
+              --add safe.directory "*"
+
+            # --------------------------------------------
+            # Rust 1.75 inside build container
+            # --------------------------------------------
+
+            cd /opt
+
+            wget -q \
+              -O rust.tar.gz \
+              "https://static.rust-lang.org/dist/rust-${{ env.RUST_TOOLCHAIN_VERSION }}-x86_64-unknown-linux-gnu.tar.gz"
+
+            tar -xzf rust.tar.gz
+
+            cd \
+              "rust-${{ env.RUST_TOOLCHAIN_VERSION }}-x86_64-unknown-linux-gnu"
+
+            ./install.sh
+
+            cd /opt
+
+            rm -rf \
+              "rust-${{ env.RUST_TOOLCHAIN_VERSION }}-x86_64-unknown-linux-gnu" \
+              rust.tar.gz
+
+            rustc --version
+            cargo --version
+
+            # --------------------------------------------
+            # Cargo
+            # --------------------------------------------
+
+            mkdir -p ~/.cargo
+
+            cat > ~/.cargo/config <<'EOF'
+            [source.crates-io]
+            registry = 'https://github.com/rust-lang/crates.io-index'
+            EOF
+
+            # --------------------------------------------
+            # Build Rust core
+            # --------------------------------------------
+
+            cd /workspace
+
+            export VCPKG_ROOT=/opt/artifacts/vcpkg
+            export CARGO_INCREMENTAL=0
+
+            cargo build \
+              --locked \
+              --lib \
+              --features hwcodec,flutter,unix-file-copy-paste \
+              --release
+
+            rm -rf \
+              target/release/deps \
+              target/release/build
+
+            # --------------------------------------------
+            # Flutter 3.24.5
+            # --------------------------------------------
+
+            cd /opt
+
+            wget -q \
+              "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz"
+
+            tar xf \
+              "flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz"
+
+            export PATH=/opt/flutter/bin:$PATH
+
+            flutter doctor -v
+
+            # RustDesk/SMDesk requires the Flutter 3.24 patch.
+            cd /opt/flutter
+
+            git apply \
+              /workspace/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+            # --------------------------------------------
+            # Build DEB
+            # --------------------------------------------
+
+            cd /workspace
+
+            export DEB_ARCH=amd64
+            export CARGO_INCREMENTAL=0
+
+            python3 ./build.py \
+              --flutter \
+              --skip-cargo
+
+            echo
+            echo "===== Upstream package generated ====="
+
+            find /workspace \
+              -maxdepth 2 \
+              -type f \
+              -name 'rustdesk*.deb' \
+              -ls
+
+      # ----------------------------------------------------
+      # Rebrand package after a successful upstream build
+      # ----------------------------------------------------
+
+      - name: Finalize SMDesk Linux package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== Locate generated DEB ====="
+
+          DEB="$(
+            find . \
+              -maxdepth 2 \
+              -type f \
+              -name 'rustdesk*.deb' \
+              | head -1
+          )"
+
+          if [ -z "$DEB" ]; then
+            echo "ERROR: RustDesk upstream DEB not found."
+            exit 1
+          fi
+
+          echo "Found: $DEB"
+
+          chmod +x \
+            scripts/rebrand-smdesk-linux-deb.sh
 
           ./scripts/rebrand-smdesk-linux-deb.sh \
             "${SMDESK_VERSION}" \
             x86_64 \
             "$DEB"
 
-      - name: Verify SMDesk package
+      # ----------------------------------------------------
+      # Package QA
+      # ----------------------------------------------------
+
+      - name: Verify SMDesk DEB
         shell: bash
         run: |
+          set -eux
+
           FILE="SMDesk-${SMDESK_VERSION}-Linux-x86_64.deb"
 
+          test -f "$FILE"
+          test -f "$FILE.sha256"
+
+          echo "===== PACKAGE INFO ====="
+
           dpkg-deb -I "$FILE"
+
+          echo
+          echo "===== PACKAGE CONTENT ====="
 
           dpkg-deb -c "$FILE" | \
             grep -E \
             'smdesk.desktop|smdesk.png|usr/bin/smdesk'
 
-          sha256sum "$FILE"
+          echo
+          echo "===== SHA256 ====="
 
-      - name: Upload Linux DEB
+          cat "$FILE.sha256"
+
+      # ----------------------------------------------------
+      # Artifact
+      # ----------------------------------------------------
+
+      - name: Upload SMDesk Linux x86_64
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SMDesk-1.2.2-Linux-x86_64
