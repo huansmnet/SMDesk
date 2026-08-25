@@ -1,0 +1,230 @@
+name: SMDesk Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - smdesk-1.2
+    paths:
+      - "flutter/**"
+      - "src/**"
+      - "libs/**"
+      - "branding/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.py"
+      - ".github/workflows/smdesk-linux.yml"
+
+permissions:
+  contents: read
+
+env:
+  SMDESK_VERSION: "1.2.2"
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  linux-x86_64:
+    name: SMDesk Linux x86_64
+    needs:
+      - generate-bridge
+
+    runs-on: ubuntu-22.04
+
+    steps:
+
+      - name: Checkout SMDesk
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          submodules: recursive
+
+      - name: Verify branding
+        shell: bash
+        run: |
+          test -f branding/smdesk-icon.png
+          test -f branding/smnet-logo.png
+
+          ls -lh \
+            branding/smdesk-icon.png \
+            branding/smnet-logo.png
+
+      - name: Install Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            cmake \
+            curl \
+            gcc \
+            g++ \
+            git \
+            libayatana-appindicator3-dev \
+            libasound2-dev \
+            libclang-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgtk-3-dev \
+            libpam0g-dev \
+            libpulse-dev \
+            libva-dev \
+            libxcb-randr0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxfixes-dev \
+            nasm \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rpm \
+            unzip \
+            wget \
+            xz-utils \
+            libssl-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: x86_64-unknown-linux-gnu
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          prefix-key: smdesk-linux-x86_64
+
+      - name: Restore Flutter bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          if ! "$VCPKG_ROOT/vcpkg" \
+            install \
+            --triplet x64-linux \
+            --x-install-root="$VCPKG_ROOT/installed"
+          then
+            find "$VCPKG_ROOT" -name "*.log" | while read log
+            do
+              echo "===== $log ====="
+              cat "$log"
+            done
+
+            exit 1
+          fi
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter 3.24.5
+        shell: bash
+        run: |
+          FLUTTER_ROOT="$(dirname "$(dirname "$(which flutter)")")"
+
+          cd "$FLUTTER_ROOT"
+
+          git apply \
+            "${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+      - name: Apply SMDesk configuration
+        shell: bash
+        run: |
+          if [ -f scripts/apply-smdesk-branding.py ]; then
+            python3 scripts/apply-smdesk-branding.py
+          fi
+
+          echo "SMDesk branding/configuration applied."
+
+      - name: Disable extra Rust library types
+        shell: bash
+        run: |
+          sed -i \
+            's/\["cdylib", "staticlib", "rlib"\]/["cdylib"]/g' \
+            Cargo.toml
+
+      - name: Build SMDesk Linux core
+        shell: bash
+        run: |
+          export VCPKG_ROOT="${VCPKG_ROOT}"
+
+          cargo build \
+            --locked \
+            --lib \
+            --features hwcodec,flutter,unix-file-copy-paste \
+            --release
+
+      - name: Build upstream Linux package
+        shell: bash
+        run: |
+          export DEB_ARCH=amd64
+
+          python3 ./build.py \
+            --flutter \
+            --skip-cargo
+
+          echo "===== Generated DEB ====="
+
+          find . \
+            -maxdepth 2 \
+            -name 'rustdesk*.deb' \
+            -ls
+
+      - name: Finalize SMDesk DEB
+        shell: bash
+        run: |
+          DEB="$(find . -maxdepth 2 -name 'rustdesk*.deb' | head -1)"
+
+          if [ -z "$DEB" ]; then
+            echo "ERROR: upstream DEB not found"
+            exit 1
+          fi
+
+          ./scripts/rebrand-smdesk-linux-deb.sh \
+            "${SMDESK_VERSION}" \
+            x86_64 \
+            "$DEB"
+
+      - name: Verify SMDesk package
+        shell: bash
+        run: |
+          FILE="SMDesk-${SMDESK_VERSION}-Linux-x86_64.deb"
+
+          dpkg-deb -I "$FILE"
+
+          dpkg-deb -c "$FILE" | \
+            grep -E \
+            'smdesk.desktop|smdesk.png|usr/bin/smdesk'
+
+          sha256sum "$FILE"
+
+      - name: Upload Linux DEB
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SMDesk-1.2.2-Linux-x86_64
+          path: |
+            SMDesk-1.2.2-Linux-x86_64.deb
+            SMDesk-1.2.2-Linux-x86_64.deb.sha256
+          if-no-files-found: error
+          retention-days: 30
